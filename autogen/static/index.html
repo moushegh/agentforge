@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AI Agent Platform</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:          #0d1117;
+    --surface:     #161b22;
+    --border:      #30363d;
+    --text:        #e6edf3;
+    --muted:       #8b949e;
+    --accent:      #58a6ff;
+
+    /* agent colours */
+    --TeamLead:      #2563eb;
+    --Developer:     #16a34a;
+    --WebResearcher: #0e7490;
+    --Tester:        #b45309;
+    --Reviewer:      #7c3aed;
+    --UserProxy:     #475569;
+    --System:        #b91c1c;
+    --Unknown:       #374151;
+
+    --status-pending:   #6b7280;
+    --status-running:   #f59e0b;
+    --status-completed: #10b981;
+    --status-error:     #ef4444;
+  }
+
+  html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+
+  /* ── Layout ── */
+  #app { display: flex; height: 100vh; overflow: hidden; }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    width: 280px; min-width: 220px; max-width: 320px;
+    display: flex; flex-direction: column;
+    background: var(--surface); border-right: 1px solid var(--border);
+  }
+  #sidebar-header {
+    padding: 16px; border-bottom: 1px solid var(--border);
+    font-size: 15px; font-weight: 600; color: var(--accent);
+    display: flex; align-items: center; gap: 8px;
+  }
+  #sidebar-header svg { flex-shrink: 0; }
+  #task-list { flex: 1; overflow-y: auto; }
+  .task-item {
+    padding: 12px 16px; cursor: pointer; border-bottom: 1px solid var(--border);
+    transition: background .15s;
+  }
+  .task-item:hover  { background: #1f262e; }
+  .task-item.active { background: #1c2a3a; border-left: 3px solid var(--accent); padding-left: 13px; }
+  .task-item-id     { font-size: 10px; color: var(--muted); font-family: monospace; }
+  .task-item-desc   { font-size: 13px; margin: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .task-item-meta   { display: flex; align-items: center; gap: 6px; }
+  .status-badge {
+    font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 10px;
+    text-transform: uppercase; letter-spacing: .4px;
+  }
+  .badge-pending   { background: #374151; color: #9ca3af; }
+  .badge-running   { background: #78350f; color: #fcd34d; animation: pulse 1.5s infinite; }
+  .badge-completed { background: #064e3b; color: #6ee7b7; }
+  .badge-error     { background: #7f1d1d; color: #fca5a5; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
+  .task-time { font-size: 10px; color: var(--muted); }
+  #empty-sidebar { padding: 32px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+
+  /* ── Main panel ── */
+  #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── Top bar ── */
+  #topbar {
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; background: var(--surface);
+    min-height: 56px;
+  }
+  #topbar-title { font-size: 14px; font-weight: 600; flex: 1; }
+  #topbar-desc  { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  #topbar-status { flex-shrink: 0; }
+
+  /* ── Agent legend ── */
+  #legend {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    padding: 8px 20px; border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+  .legend-dot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  /* ── Feed ── */
+  #feed {
+    flex: 1; overflow-y: auto; padding: 16px 20px 8px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #feed::-webkit-scrollbar       { width: 6px; }
+  #feed::-webkit-scrollbar-track  { background: transparent; }
+  #feed::-webkit-scrollbar-thumb  { background: #30363d; border-radius: 3px; }
+
+  /* ── Empty feed ── */
+  #empty-feed {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: var(--muted); gap: 12px;
+  }
+  #empty-feed svg { opacity: .3; }
+  #empty-feed p   { font-size: 14px; }
+
+  /* ── Message ── */
+  .msg { display: flex; gap: 10px; animation: fadein .2s ease; }
+  @keyframes fadein { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: #fff; margin-top: 2px;
+  }
+  .msg-body { flex: 1; min-width: 0; }
+  .msg-header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .agent-name  { font-size: 13px; font-weight: 600; }
+  .msg-time    { font-size: 10px; color: var(--muted); }
+  .msg-content {
+    font-size: 13px; line-height: 1.6; color: var(--text);
+    word-break: break-word; white-space: pre-wrap;
+  }
+  .msg-content code {
+    background: #161b22; border: 1px solid var(--border);
+    padding: 0 4px; border-radius: 3px; font-size: 12px;
+    font-family: "SFMono-Regular", Consolas, monospace;
+  }
+  .msg-content pre {
+    background: #161b22; border: 1px solid var(--border);
+    border-radius: 6px; padding: 12px 14px; margin: 6px 0;
+    overflow-x: auto; font-size: 12px; line-height: 1.5;
+  }
+  .msg-content pre code { background: none; border: none; padding: 0; font-size: inherit; }
+  .tool-badge {
+    display: inline-block; font-size: 10px; padding: 1px 7px;
+    background: #1e293b; border: 1px solid #334155;
+    border-radius: 10px; color: #94a3b8; margin-top: 4px; font-family: monospace;
+  }
+  /* system messages */
+  .msg.system .msg-content { color: var(--muted); font-style: italic; }
+
+  /* ── Typing indicator ── */
+  #typing {
+    display: none; align-items: center; gap: 8px;
+    padding: 4px 0 0 42px; font-size: 12px; color: var(--muted);
+  }
+  .typing-dots span {
+    display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+    background: var(--muted); margin: 0 1px;
+    animation: blink 1.2s infinite;
+  }
+  .typing-dots span:nth-child(2) { animation-delay: .2s; }
+  .typing-dots span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%,80%,100%{opacity:.2} 40%{opacity:1} }
+
+  /* ── Input area ── */
+  #input-area {
+    padding: 14px 20px; border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  #task-form { display: flex; gap: 10px; align-items: flex-end; }
+  #task-input {
+    flex: 1; resize: none; min-height: 44px; max-height: 160px;
+    background: #0d1117; border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text); font-size: 14px;
+    padding: 10px 14px; font-family: inherit; line-height: 1.5;
+    outline: none; transition: border-color .15s;
+  }
+  #task-input:focus { border-color: var(--accent); }
+  #task-input::placeholder { color: var(--muted); }
+  #submit-btn {
+    padding: 10px 20px; background: var(--accent); color: #0d1117;
+    border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: opacity .15s; white-space: nowrap; height: 44px;
+  }
+  #submit-btn:hover:not(:disabled) { opacity: .85; }
+  #submit-btn:disabled { opacity: .4; cursor: not-allowed; }
+  #input-hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+  /* ── Scrollbar global ── */
+  #task-list::-webkit-scrollbar { width: 4px; }
+  #task-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- ── Sidebar ─────────────────────────────────────── -->
+  <aside id="sidebar">
+    <div id="sidebar-header">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+      </svg>
+      AI Agent Platform
+    </div>
+    <div id="task-list">
+      <div id="empty-sidebar">No tasks yet.<br/>Submit one below.</div>
+    </div>
+  </aside>
+
+  <!-- ── Main ────────────────────────────────────────── -->
+  <main id="main">
+    <div id="topbar">
+      <div style="flex:1">
+        <div id="topbar-title">Select a task or submit a new one</div>
+        <div id="topbar-desc"></div>
+      </div>
+      <div id="topbar-status"></div>
+    </div>
+
+    <!-- Agent legend -->
+    <div id="legend"></div>
+
+    <!-- Message feed -->
+    <div id="feed">
+      <div id="empty-feed">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+        <p>Submit a task to start the agent team</p>
+      </div>
+    </div>
+
+    <!-- Typing indicator -->
+    <div id="typing">
+      <div class="typing-dots"><span></span><span></span><span></span></div>
+      <span id="typing-who">agents working…</span>
+    </div>
+
+    <!-- Input -->
+    <div id="input-area">
+      <form id="task-form">
+        <textarea id="task-input" rows="1" placeholder="Describe a task for the agent team…" required></textarea>
+        <button id="submit-btn" type="submit">Run</button>
+      </form>
+      <div id="input-hint">Press Ctrl+Enter to submit</div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ── Constants ─────────────────────────────────────────────────────────────
+const AGENT_COLORS = {
+  TeamLead:      '#2563eb',
+  Developer:     '#16a34a',
+  WebResearcher: '#0e7490',
+  Tester:        '#b45309',
+  Reviewer:      '#7c3aed',
+  UserProxy:     '#475569',
+  System:        '#b91c1c',
+};
+
+function agentColor(name) {
+  return AGENT_COLORS[name] || '#374151';
+}
+
+function initials(name) {
+  if (!name) return '?';
+  const parts = name.match(/[A-Z][a-z]*/g) || [name];
+  return parts.slice(0, 2).map(p => p[0]).join('');
+}
+
+function fmt(ts) {
+  if (!ts) return '';
+  try {
+    return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  } catch { return ''; }
+}
+
+// ── Markdown-lite renderer ─────────────────────────────────────────────────
+function renderContent(raw) {
+  if (!raw) return '';
+
+  // Escape HTML (before any other processing)
+  let s = raw
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;');
+
+  // Fenced code blocks  ```lang\ncode\n```
+  s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, lang, code) =>
+    `<pre><code class="lang-${lang}">${code.trimEnd()}</code></pre>`);
+
+  // Inline `code`
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // **bold**
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  return s;
+}
+
+// ── State ─────────────────────────────────────────────────────────────────
+let _tasks   = {};       // id → task object
+let _active  = null;     // currently viewed task id
+let _eventSrc = null;    // active EventSource
+
+// ── DOM refs ──────────────────────────────────────────────────────────────
+const feed       = document.getElementById('feed');
+const emptyFeed  = document.getElementById('empty-feed');
+const taskList   = document.getElementById('task-list');
+const emptySide  = document.getElementById('empty-sidebar');
+const topTitle   = document.getElementById('topbar-title');
+const topDesc    = document.getElementById('topbar-desc');
+const topStatus  = document.getElementById('topbar-status');
+const legend     = document.getElementById('legend');
+const typing     = document.getElementById('typing');
+const typingWho  = document.getElementById('typing-who');
+const taskForm   = document.getElementById('task-form');
+const taskInput  = document.getElementById('task-input');
+const submitBtn  = document.getElementById('submit-btn');
+
+// ── Legend ─────────────────────────────────────────────────────────────────
+(function buildLegend() {
+  Object.entries(AGENT_COLORS).forEach(([name, color]) => {
+    const el = document.createElement('div');
+    el.className = 'legend-item';
+    el.innerHTML = `<div class="legend-dot" style="background:${color}"></div><span>${name}</span>`;
+    legend.appendChild(el);
+  });
+})();
+
+// ── Sidebar ────────────────────────────────────────────────────────────────
+function badgeClass(status) {
+  return 'status-badge badge-' + (status || 'pending');
+}
+
+function renderSidebar() {
+  const items = Object.values(_tasks).reverse();
+  if (!items.length) {
+    taskList.innerHTML = '';
+    taskList.appendChild(document.getElementById('empty-sidebar') || createEmptySide());
+    emptySide.style.display = 'block';
+    return;
+  }
+  emptySide.style.display = 'none';
+
+  // Preserve existing items, only update / add
+  items.forEach(task => {
+    let el = document.getElementById('si-' + task.id);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'task-item';
+      el.id = 'si-' + task.id;
+      el.addEventListener('click', () => openTask(task.id));
+      taskList.insertBefore(el, taskList.firstChild);
+    }
+    if (_active === task.id) el.classList.add('active');
+    else el.classList.remove('active');
+
+    const d = new Date(task.created_at);
+    const timeStr = d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    el.innerHTML = `
+      <div class="task-item-id">#${task.id}</div>
+      <div class="task-item-desc" title="${esc(task.description)}">${esc(task.description)}</div>
+      <div class="task-item-meta">
+        <span class="${badgeClass(task.status)}">${task.status}</span>
+        <span class="task-time">${timeStr}</span>
+        <span class="task-time">${task.message_count || 0} msgs</span>
+      </div>`;
+  });
+}
+
+function createEmptySide() {
+  const d = document.createElement('div');
+  d.id = 'empty-sidebar';
+  d.className = '';
+  d.style = 'padding:32px 16px;text-align:center;color:var(--muted);font-size:13px';
+  d.textContent = 'No tasks yet. Submit one below.';
+  return d;
+}
+
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── Open task ─────────────────────────────────────────────────────────────
+async function openTask(id) {
+  if (_active === id) return;
+
+  // Close existing SSE
+  if (_eventSrc) { _eventSrc.close(); _eventSrc = null; }
+
+  _active = id;
+  renderSidebar();
+
+  // Clear feed
+  feed.innerHTML = '';
+  emptyFeed.style.display = 'none';
+
+  const task = _tasks[id];
+  topTitle.textContent = `Task #${task.id}`;
+  topDesc.textContent  = task.description;
+  updateTopStatus(task.status);
+
+  // Connect SSE
+  connectSSE(id);
+}
+
+// ── SSE ────────────────────────────────────────────────────────────────────
+function connectSSE(taskId) {
+  const es = new EventSource(`/api/tasks/${taskId}/stream`);
+  _eventSrc = es;
+
+  es.onmessage = e => {
+    const data = JSON.parse(e.data);
+    handleSSEEvent(taskId, data);
+  };
+
+  es.onerror = () => {
+    setTyping(false);
+    es.close();
+  };
+}
+
+function handleSSEEvent(taskId, data) {
+  if (!_tasks[taskId]) return;
+
+  if (data.type === 'status') {
+    _tasks[taskId].status = data.status;
+    renderSidebar();
+    if (_active === taskId) updateTopStatus(data.status);
+    if (data.status === 'running') setTyping(true, 'agents working…');
+    return;
+  }
+
+  if (data.type === 'done') {
+    _tasks[taskId].status = data.status || 'completed';
+    setTyping(false);
+    renderSidebar();
+    if (_active === taskId) updateTopStatus(_tasks[taskId].status);
+    if (_eventSrc) { _eventSrc.close(); _eventSrc = null; }
+    return;
+  }
+
+  if (data.type === 'message' || data.name) {
+    _tasks[taskId].message_count = (_tasks[taskId].message_count || 0) + 1;
+    if (_active === taskId) appendMessage(data);
+    setTyping(true, `${data.name} responded, waiting for next…`);
+  }
+}
+
+// ── Append message ─────────────────────────────────────────────────────────
+function appendMessage(msg) {
+  const content = msg.content || '';
+  if (!content && !msg.has_tool) return;  // empty, skip
+
+  const color = agentColor(msg.name);
+  const el = document.createElement('div');
+  el.className = 'msg' + (msg.name === 'System' ? ' system' : '');
+
+  const toolBadge = msg.has_tool
+    ? `<div class="tool-badge">🔧 tool call</div>` : '';
+
+  el.innerHTML = `
+    <div class="avatar" style="background:${color}">${initials(msg.name)}</div>
+    <div class="msg-body">
+      <div class="msg-header">
+        <span class="agent-name" style="color:${color}">${esc(msg.name)}</span>
+        <span class="msg-time">${fmt(msg.timestamp)}</span>
+      </div>
+      <div class="msg-content">${renderContent(content)}</div>
+      ${toolBadge}
+    </div>`;
+
+  feed.appendChild(el);
+  feed.scrollTop = feed.scrollHeight;
+}
+
+// ── Typing indicator ───────────────────────────────────────────────────────
+function setTyping(show, text) {
+  typing.style.display = show ? 'flex' : 'none';
+  if (text) typingWho.textContent = text;
+}
+
+// ── Top status ─────────────────────────────────────────────────────────────
+function updateTopStatus(status) {
+  topStatus.innerHTML = `<span class="${badgeClass(status)}">${status}</span>`;
+}
+
+// ── Submit task ────────────────────────────────────────────────────────────
+taskForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  const description = taskInput.value.trim();
+  if (!description) return;
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Starting…';
+
+  try {
+    const res = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({task: description}),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const task = await res.json();
+    _tasks[task.id] = task;
+    taskInput.value = '';
+    autoResizeTA();
+    renderSidebar();
+    openTask(task.id);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Run';
+  }
+});
+
+// ctrl+enter submits
+taskInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); taskForm.dispatchEvent(new Event('submit')); }
+});
+
+// Auto-resize textarea
+function autoResizeTA() {
+  taskInput.style.height = '44px';
+  taskInput.style.height = Math.min(taskInput.scrollHeight, 160) + 'px';
+}
+taskInput.addEventListener('input', autoResizeTA);
+
+// ── Poll for task list updates ─────────────────────────────────────────────
+async function pollTasks() {
+  try {
+    const res  = await fetch('/api/tasks');
+    const list = await res.json();
+    list.forEach(t => { _tasks[t.id] = {...(_tasks[t.id] || {}), ...t}; });
+    renderSidebar();
+  } catch {}
+}
+
+// Initial load
+pollTasks();
+setInterval(pollTasks, 5000);
+</script>
+</body>
+</html>
