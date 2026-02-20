@@ -49,8 +49,10 @@ agents:
         - NEVER do the work yourself; always delegate with @AgentName
         - Assign ONE task at a time and wait for the response
         - After all four stages complete, end with the single word: TERMINATE
-      You have memory tools — use retrieve_memory at the start of a task to recall prior context,
-      and store_memory at the end to record the outcome for future sessions.
+      You have memory tools — use search_nodes at the start of a task to recall prior context,
+      and add_observations at the end to record the outcome for future sessions.
+      MEMORY FORMAT for add_observations:
+        observations = [{"entityName": "SomeName", "contents": ["outcome summary"]}]
     llm_config: ${models.local_llm}
     code_execution_config: False
 
@@ -64,6 +66,8 @@ agents:
         - git_status, git_diff, git_add, git_commit: commit your work after saving files.
         - create_entities, search_nodes, add_observations (memory): store design decisions;
           use search_nodes to recall how similar problems were solved before.
+      MEMORY FORMAT for add_observations:
+        observations = [{"entityName": "SomeName", "contents": ["decision or finding"]}]
       WORKFLOW: write_file → execute_command (verify it runs) → git_commit → confirm to TeamLead.
     llm_config: ${models.local_llm}
     code_execution_config:
@@ -79,6 +83,8 @@ agents:
         - git_diff, git_log: see exactly what changed in the repository.
         - search_nodes, add_observations (memory): recall past issues on similar code;
           store recurring patterns so future reviews benefit.
+      MEMORY FORMAT for add_observations:
+        observations = [{"entityName": "SomeName", "contents": ["review finding"]}]
       Always read the file and run git_diff before reviewing. Reference specific line numbers.
     llm_config: ${models.local_llm}
     code_execution_config: False
@@ -90,8 +96,11 @@ agents:
       You have MCP tools available:
         - fetch(url): retrieve content from a specific known URL.
         - get_current_time / get_current_date: get today's date for time-sensitive queries.
-        - create_entities, search_nodes, add_observations (memory): store key findings so
-          Developer and Tester can retrieve them; recall prior research on the same topic.
+        - create_entities, search_nodes, add_observations (memory): store key findings.
+      MEMORY FORMAT — always use this exact structure for add_observations:
+        observations = [{"entityName": "SomeName", "contents": ["finding one", "finding two"]}]
+      For create_entities:
+        entities = [{"name": "SomeName", "entityType": "research", "observations": ["summary"]}]
       WORKFLOW: fetch relevant URLs → add_observations to memory.
       Keep responses under 200 words. Format as bullet points starting with KEY FINDINGS.
     llm_config: ${models.local_llm}
@@ -107,6 +116,8 @@ agents:
         - git_diff, git_log: check what was recently changed before writing tests.
         - search_nodes, add_observations (memory): recall known edge cases for this codebase;
           store test results so the Reviewer has context.
+      MEMORY FORMAT for add_observations:
+        observations = [{"entityName": "SomeName", "contents": ["test result or edge case"]}]
       WORKFLOW: git_diff (what changed) → write tests → execute_command (run them) → add_observations.
     llm_config: ${models.local_llm}
     code_execution_config:

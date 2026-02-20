@@ -64,7 +64,7 @@ class LocalMultiAgentTeam:
                 "timeout": 1200,  # 20 min — CPU inference can be slow; default 10 min is not enough
             }],
             "temperature": 0.1,  # Lower temperature for more focused responses
-            "max_tokens": 800,   # Keep responses short; 800 is enough for code + tool calls
+            "max_tokens": 2048,  # enough for code + tool calls
             "top_p": 0.9,
         }
 
@@ -279,6 +279,9 @@ RESULTS: PASS (with note about negative input handling)""",
         }
         # Track which agent issued a text-format tool call (local model quirk)
         pending_text_caller: dict = {"name": None}
+        # Loop-break counters: consecutive empty replies and repeated delegations
+        _empty_count: dict = {}      # agent_name -> consecutive empty reply count
+        _delegate_count: dict = {}   # agent_name -> consecutive delegation count by TeamLead
 
         # Reverse lookup: agent.name ("WebResearcher") → agent object
         # self.agents uses YAML keys ("web_researcher"), not display names.
@@ -305,6 +308,7 @@ RESULTS: PASS (with note about negative input handling)""",
             # --- Route STRUCTURED tool_calls to the executor (UserProxy) -----
             if last_msg.get("tool_calls"):
                 pending_text_caller["name"] = None  # clear text-call state
+                _empty_count[last_speaker_name] = 0  # structured call = active
                 return self.user_proxy
 
             # --- Route TEXT-FORMAT tool calls to UserProxy -------------------
@@ -313,6 +317,7 @@ RESULTS: PASS (with note about negative input handling)""",
                 parsed = detect_text_tool_call(last_content)
                 if parsed and parsed["name"] in get_tool_registry():
                     pending_text_caller["name"] = last_speaker_name
+                    _empty_count[last_speaker_name] = 0
                     return self.user_proxy
 
             # --- After UserProxy executes a tool, route back to the caller ---
@@ -330,26 +335,52 @@ RESULTS: PASS (with note about negative input handling)""",
                     pending_text_caller["name"] = None
                     return agents_by_name[name]
 
+            # --- Helpers for loop detection -----------------------------------
+            def _stage_done_for(agent_name: str) -> None:
+                """Force-advance whichever stage this agent owns."""
+                if agent_name == "WebResearcher":
+                    task_stage['research_done'] = True
+                elif agent_name == "Developer":
+                    task_stage['code_written'] = True
+                elif agent_name == "Tester":
+                    task_stage['tested'] = True
+                elif agent_name == "Reviewer":
+                    task_stage['reviewed'] = True
+
+            EMPTY_LIMIT = 2      # consecutive empty replies before force-advancing
+            DELEGATE_LIMIT = 3   # repeated TeamLead delegations before force-advancing
+
             # --- After a specialist responds, mark stage and return TeamLead ---
-            if last_speaker_name == "WebResearcher" and last_content:
-                task_stage['research_done'] = True
-                return self.agents['team_lead']
-
-            if last_speaker_name == "Developer" and last_content:
-                task_stage['code_written'] = True
-                return self.agents['team_lead']
-
-            if last_speaker_name == "Tester" and last_content:
-                task_stage['tested'] = True
-                return self.agents['team_lead']
-
-            if last_speaker_name == "Reviewer" and last_content:
-                task_stage['reviewed'] = True
+            # Count empty replies; force-advance after threshold
+            if last_speaker_name in ("WebResearcher", "Developer", "Tester", "Reviewer"):
+                if last_content:
+                    _empty_count[last_speaker_name] = 0
+                    _delegate_count[last_speaker_name] = 0
+                    _stage_done_for(last_speaker_name)
+                else:
+                    _empty_count[last_speaker_name] = _empty_count.get(last_speaker_name, 0) + 1
+                    if _empty_count[last_speaker_name] >= EMPTY_LIMIT:
+                        print(f"[loop-break] {last_speaker_name} sent {_empty_count[last_speaker_name]} "
+                              f"empty replies — force-advancing stage.")
+                        _empty_count[last_speaker_name] = 0
+                        _delegate_count[last_speaker_name] = 0
+                        _stage_done_for(last_speaker_name)
                 return self.agents['team_lead']
 
             # --- After TeamLead speaks, route to the mentioned specialist -----
             # Enforce strict stage order: Research → Develop → Test → Review
             if last_speaker_name == "TeamLead" and last_content:
+                # Count consecutive delegations to the same agent (loop detection)
+                for agent_name in ("WebResearcher", "Developer", "Tester", "Reviewer"):
+                    if f"@{agent_name}" in last_content:
+                        _delegate_count[agent_name] = _delegate_count.get(agent_name, 0) + 1
+                        if _delegate_count[agent_name] > DELEGATE_LIMIT:
+                            print(f"[loop-break] TeamLead delegated to {agent_name} "
+                                  f"{_delegate_count[agent_name]}x — force-advancing stage.")
+                            _delegate_count[agent_name] = 0
+                            _empty_count[agent_name] = 0
+                            _stage_done_for(agent_name)
+                        break
                 if not task_stage['research_done'] and "@WebResearcher" in last_content:
                     return self.agents['web_researcher']
                 if not task_stage['code_written'] and "@Developer" in last_content:
@@ -358,8 +389,6 @@ RESULTS: PASS (with note about negative input handling)""",
                     return self.agents['tester']
                 # Gate: Reviewer and TERMINATE require testing to be done first
                 if not task_stage['tested']:
-                    # TeamLead skipped testing (hallucinated results or jumped ahead)
-                    # Redirect to Tester regardless of what TeamLead said
                     return self.agents['tester']
                 if not task_stage['reviewed'] and "@Reviewer" in last_content:
                     return self.agents['reviewer']

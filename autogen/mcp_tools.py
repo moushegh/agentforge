@@ -20,6 +20,8 @@ from typing import Any, Callable, Optional
 # maps tool_name → server_url so text-format tool calls can be dispatched
 # ---------------------------------------------------------------------------
 _TOOL_REGISTRY: dict[str, str] = {}
+# maps tool_name → {param_name: json_type_string} for argument coercion
+_TOOL_PROPS_REGISTRY: dict[str, dict] = {}
 
 
 def get_tool_registry() -> dict[str, str]:
@@ -121,6 +123,9 @@ def execute_text_tool_call(name: str, arguments: dict) -> "str | None":
     server_url = _TOOL_REGISTRY.get(name)
     if not server_url:
         return None
+    # Coerce list/dict → string for str-typed parameters using stored schema
+    props = _TOOL_PROPS_REGISTRY.get(name, {})
+    arguments = _coerce_args(arguments, props, set())
     last_exc: BaseException = RuntimeError("unknown")
     for attempt in range(4):
         try:
@@ -218,7 +223,83 @@ async def _call_tool(server_url: str, tool_name: str, arguments: dict) -> str:
 # Tool factory — builds a properly-typed wrapper from the MCP inputSchema
 # ---------------------------------------------------------------------------
 
-_JSON_TO_PYTHON = {"string": str, "number": float, "integer": int, "boolean": bool}
+_JSON_TO_PYTHON = {"string": str, "number": float, "integer": int, "boolean": bool, "array": list, "object": dict}
+
+
+def _schema_to_example(schema: dict, depth: int = 0) -> Any:
+    """Recursively build a concrete example value from a JSON Schema node."""
+    if depth > 4:
+        return "..."
+    t = schema.get("type", "string") if isinstance(schema, dict) else "string"
+    if t == "string":
+        # Use param name hint from description, skipping stop words
+        desc = schema.get("description", "") if isinstance(schema, dict) else ""
+        stop = {"the", "a", "an", "of", "to", "in", "for", "and", "or", "is", "are"}
+        words = [w.strip(".()'\"") for w in desc.split() if w.lower().strip(".()'\"") not in stop]
+        hint = words[0] if words else "text"
+        return hint[:20]
+    elif t in ("number", "integer"):
+        return 1
+    elif t == "boolean":
+        return True
+    elif t == "array":
+        item_schema = schema.get("items", {"type": "string"}) if isinstance(schema, dict) else {"type": "string"}
+        return [_schema_to_example(item_schema, depth + 1)]
+    elif t == "object":
+        props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+        if not props:
+            return {}
+        return {k: _schema_to_example(v, depth + 1) for k, v in props.items()}
+    return "value"
+
+
+def _build_description(tool_name: str, base_description: str, input_schema: dict) -> str:
+    """Append a concrete usage example to the description for complex schemas."""
+    props = input_schema.get("properties", {}) if input_schema else {}
+    has_complex = any(
+        (v.get("type") if isinstance(v, dict) else v) in ("array", "object")
+        for v in props.values()
+    )
+    if not has_complex:
+        return base_description
+    example_args = {k: _schema_to_example(v) for k, v in props.items()}
+    example_json = json.dumps(example_args, ensure_ascii=False)
+    return f"{base_description}\nArgument format example: {example_json}"
+
+
+def _coerce_args(call_args: dict, props: dict, required: set) -> dict:
+    """
+    Coerce any argument value to the type declared in the MCP schema.
+    props can be either:
+      - full inputSchema properties: {"param": {"type": "array", ...}}
+      - type-string registry:        {"param": "array"}
+    Rules:
+      - expected string + got list/dict  → JSON-stringify
+      - expected array/object + got str  → JSON-parse back
+    """
+    coerced = {}
+    for k, v in call_args.items():
+        if props:
+            raw = props.get(k, "string")
+            expected_json_type = raw.get("type", "string") if isinstance(raw, dict) else str(raw)
+        else:
+            expected_json_type = "string"
+
+        if expected_json_type == "string" and not isinstance(v, str):
+            if isinstance(v, (list, dict)):
+                v = json.dumps(v, ensure_ascii=False)
+            else:
+                v = str(v)
+        elif expected_json_type in ("array", "object") and isinstance(v, str):
+            # LLM sometimes passes a JSON string for array/object params—parse it back
+            try:
+                v = json.loads(v)
+            except Exception:
+                # Last resort for array: wrap the bare string in a list
+                if expected_json_type == "array":
+                    v = [v]
+        coerced[k] = v
+    return coerced
 
 
 def _make_tool_func(server_url: str, tool_name: str, input_schema: dict) -> Callable:
@@ -256,10 +337,11 @@ def _make_tool_func(server_url: str, tool_name: str, input_schema: dict) -> Call
         annotations[pname] = py_type
 
     # Capture for closure
-    _url  = server_url
-    _name = tool_name
-    _req  = required
-    _all  = list(ordered_names)
+    _url   = server_url
+    _name  = tool_name
+    _req   = required
+    _all   = list(ordered_names)
+    _props = props
 
     def tool_func(*args, **kwargs) -> str:  # type: ignore[override]
         # Merge positional args into kwargs by position
@@ -270,6 +352,8 @@ def _make_tool_func(server_url: str, tool_name: str, input_schema: dict) -> Call
         merged.update(kwargs)
         # Drop None optional args
         call_args = {k: v for k, v in merged.items() if v is not None or k in _req}
+        # Coerce list/dict → string for str-typed parameters
+        call_args = _coerce_args(call_args, _props, _req)
         # Retry on connection errors — supergateway briefly restarts between calls
         import time as _time
         last_exc: BaseException = RuntimeError("unknown")
@@ -363,7 +447,11 @@ def register_mcp_tools(config: dict, agents: dict, executor) -> None:
             else:
                 input_schema = {}
             fn = _make_tool_func(url, tool.name, input_schema)
-            description = (tool.description or tool.name).strip()
+            description = _build_description(
+                tool.name,
+                (tool.description or tool.name).strip(),
+                input_schema,
+            )
             registered_to = []
 
             for agent_name in agent_names:
@@ -386,6 +474,9 @@ def register_mcp_tools(config: dict, agents: dict, executor) -> None:
             if registered_to:
                 print(f"    ✓ '{tool.name}' → {registered_to}")
                 # Also add to global text-tool-call registry
-                _TOOL_REGISTRY[tool.name] = url
-
+                _TOOL_REGISTRY[tool.name] = url                # Store prop types for argument coercion
+                _TOOL_PROPS_REGISTRY[tool.name] = {
+                    k: v.get("type", "string")
+                    for k, v in input_schema.get("properties", {}).items()
+                }
     print("[MCP] Tool registration complete.\n")

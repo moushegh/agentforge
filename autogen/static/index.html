@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>AI Agent Platform</title>
+<title>AgentForge</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -48,6 +48,14 @@
     display: flex; align-items: center; gap: 8px;
   }
   #sidebar-header svg { flex-shrink: 0; }
+  #sidebar-header span { flex: 1; }
+  #stop-all-btn {
+    padding: 3px 9px; background: transparent; color: #ef4444;
+    border: 1px solid #ef4444; border-radius: 6px; font-size: 11px;
+    font-weight: 600; cursor: pointer; transition: background .15s, color .15s;
+    white-space: nowrap; display: none;
+  }
+  #stop-all-btn:hover { background: #ef4444; color: #fff; }
   #task-list { flex: 1; overflow-y: auto; }
   .task-item {
     padding: 12px 16px; cursor: pointer; border-bottom: 1px solid var(--border);
@@ -62,10 +70,12 @@
     font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 10px;
     text-transform: uppercase; letter-spacing: .4px;
   }
-  .badge-pending   { background: #374151; color: #9ca3af; }
-  .badge-running   { background: #78350f; color: #fcd34d; animation: pulse 1.5s infinite; }
-  .badge-completed { background: #064e3b; color: #6ee7b7; }
-  .badge-error     { background: #7f1d1d; color: #fca5a5; }
+  .badge-pending      { background: #374151; color: #9ca3af; }
+  .badge-running      { background: #78350f; color: #fcd34d; animation: pulse 1.5s infinite; }
+  .badge-completed    { background: #064e3b; color: #6ee7b7; }
+  .badge-error        { background: #7f1d1d; color: #fca5a5; }
+  .badge-cancelled    { background: #3b1f5e; color: #c4b5fd; }
+  .badge-interrupted  { background: #422006; color: #fdba74; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
   .task-time { font-size: 10px; color: var(--muted); }
   #empty-sidebar { padding: 32px 16px; text-align: center; color: var(--muted); font-size: 13px; }
@@ -183,6 +193,29 @@
   #submit-btn:disabled { opacity: .4; cursor: not-allowed; }
   #input-hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
 
+  /* ── Quick tasks ── */
+  #quick-tasks {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 10px 20px 0; background: var(--surface);
+  }
+  .quick-chip {
+    padding: 4px 11px; background: #161b22; border: 1px solid var(--border);
+    border-radius: 20px; font-size: 12px; color: var(--muted);
+    cursor: pointer; transition: border-color .15s, color .15s; white-space: nowrap;
+  }
+  .quick-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .quick-chips-label { font-size: 11px; color: #4a5568; align-self: center; }
+
+  /* ── Stop button ── */
+  #stop-btn {
+    padding: 6px 16px; background: transparent; color: #ef4444;
+    border: 1px solid #ef4444; border-radius: 8px; font-size: 13px;
+    font-weight: 600; cursor: pointer; transition: background .15s, color .15s;
+    white-space: nowrap;
+  }
+  #stop-btn:hover { background: #ef4444; color: #fff; }
+  #stop-btn:disabled { opacity: .4; cursor: not-allowed; }
+
   /* ── Scrollbar global ── */
   #task-list::-webkit-scrollbar { width: 4px; }
   #task-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
@@ -196,7 +229,8 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
       </svg>
-      AI Agent Platform
+      <span>AgentForge</span>
+      <button id="stop-all-btn" title="Stop all running tasks">&#9632; Stop All</button>
     </div>
     <div id="task-list">
       <div id="empty-sidebar">No tasks yet.<br/>Submit one below.</div>
@@ -210,6 +244,7 @@
         <div id="topbar-title">Select a task or submit a new one</div>
         <div id="topbar-desc"></div>
       </div>
+      <button id="stop-btn" style="display:none" title="Stop this task">&#9632; Stop</button>
       <div id="topbar-status"></div>
     </div>
 
@@ -230,6 +265,15 @@
     <div id="typing">
       <div class="typing-dots"><span></span><span></span><span></span></div>
       <span id="typing-who">agents working…</span>
+    </div>
+
+    <!-- Quick tasks -->
+    <div id="quick-tasks">
+      <span class="quick-chips-label">Quick&nbsp;tasks:</span>
+      <button class="quick-chip" data-task="Health-check all MCP servers. For each server (filesystem on port 3001, web-fetch on port 3002, shell-exec on port 3003, memory on port 3005, git on port 3006, time on port 3007), use one of its tools and confirm it responds correctly. Report PASS or FAIL for each server with the tool used and the result.">&#128307; Check MCP servers</button>
+      <button class="quick-chip" data-task="List all files currently in the /workspace directory. For each file show its size and a one-line summary of what it contains.">&#128193; List workspace files</button>
+      <button class="quick-chip" data-task="Show the git log for the /workspace repository (last 10 commits) and git status. Summarise what has been done.">&#128194; Git status &amp; log</button>
+      <button class="quick-chip" data-task="Read the knowledge graph from memory and present a structured summary of everything that has been stored so far.">&#129504; Recall memory</button>
     </div>
 
     <!-- Input -->
@@ -308,7 +352,9 @@ const emptySide  = document.getElementById('empty-sidebar');
 const topTitle   = document.getElementById('topbar-title');
 const topDesc    = document.getElementById('topbar-desc');
 const topStatus  = document.getElementById('topbar-status');
-const legend     = document.getElementById('legend');
+const stopBtn      = document.getElementById('stop-btn');
+const stopAllBtn   = document.getElementById('stop-all-btn');
+const legend       = document.getElementById('legend');
 const typing     = document.getElementById('typing');
 const typingWho  = document.getElementById('typing-who');
 const taskForm   = document.getElementById('task-form');
@@ -479,7 +525,23 @@ function setTyping(show, text) {
 // ── Top status ─────────────────────────────────────────────────────────────
 function updateTopStatus(status) {
   topStatus.innerHTML = `<span class="${badgeClass(status)}">${status}</span>`;
+  stopBtn.style.display = (status === 'running') ? 'inline-block' : 'none';
 }
+
+// ── Stop button ────────────────────────────────────────────────────────────
+stopBtn.addEventListener('click', async () => {
+  if (!_active) return;
+  stopBtn.disabled = true;
+  stopBtn.textContent = 'Stopping…';
+  try {
+    await fetch(`/api/tasks/${_active}/stop`, {method: 'POST'});
+  } catch (err) {
+    console.error('stop failed', err);
+  } finally {
+    stopBtn.disabled = false;
+    stopBtn.innerHTML = '&#9632; Stop';
+  }
+});
 
 // ── Submit task ────────────────────────────────────────────────────────────
 taskForm.addEventListener('submit', async e => {
@@ -516,6 +578,18 @@ taskInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); taskForm.dispatchEvent(new Event('submit')); }
 });
 
+// ── Quick task chips ───────────────────────────────────────────────────────
+document.getElementById('quick-tasks').addEventListener('click', e => {
+  const chip = e.target.closest('.quick-chip');
+  if (!chip) return;
+  const text = chip.dataset.task;
+  taskInput.value = text;
+  autoResizeTA();
+  taskInput.focus();
+  // Shift+click → submit immediately
+  if (e.shiftKey) taskForm.dispatchEvent(new Event('submit'));
+});
+
 // Auto-resize textarea
 function autoResizeTA() {
   taskInput.style.height = '44px';
@@ -523,11 +597,28 @@ function autoResizeTA() {
 }
 taskInput.addEventListener('input', autoResizeTA);
 
-// ── Poll for task list updates ─────────────────────────────────────────────
+// ── Stop All button ───────────────────────────────────────────────────────
+stopAllBtn.addEventListener('click', async () => {
+  if (!confirm('Stop all running tasks?')) return;
+  stopAllBtn.disabled = true;
+  try {
+    const res  = await fetch('/api/tasks/stop-all', {method: 'POST'});
+    const data = await res.json();
+    console.log('stopped', data.count, 'tasks');
+  } catch (err) {
+    console.error('stop-all failed', err);
+  } finally {
+    stopAllBtn.disabled = false;
+  }
+});
+
+// ── Poll for task list updates ──────────────────────────────────────────
 async function pollTasks() {
   try {
     const res  = await fetch('/api/tasks');
     const list = await res.json();
+    const hasRunning = list.some(t => t.status === 'running' || t.status === 'pending');
+    stopAllBtn.style.display = hasRunning ? 'inline-block' : 'none';
     list.forEach(t => { _tasks[t.id] = {...(_tasks[t.id] || {}), ...t}; });
     renderSidebar();
   } catch {}

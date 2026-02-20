@@ -53,12 +53,13 @@ class AgentTask:
     def __init__(self, task_id: str, description: str):
         self.id          = task_id
         self.description = description
-        self.status      = "pending"          # pending | running | completed | error
+        self.status      = "pending"          # pending | running | completed | error | cancelled
         self.error: Optional[str] = None
         self.created_at  = datetime.now(timezone.utc).isoformat()
         self.finished_at: Optional[str] = None
         self.messages: list = []              # accumulated raw GroupChat messages
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=4096)
+        self._asyncio_task: Optional[asyncio.Task] = None  # handle for cancellation
 
     def to_dict(self, include_messages: bool = False) -> dict:
         d = {
@@ -80,6 +81,66 @@ _tasks: Dict[str, AgentTask] = {}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Persistence
+# ──────────────────────────────────────────────────────────────────────────────
+
+_TASKS_FILE = "/logs/tasks.json"
+
+
+def _persist_tasks() -> None:
+    """Serialize all tasks to disk (best-effort, atomic write)."""
+    try:
+        data = []
+        for task in _tasks.values():
+            data.append({
+                "id":          task.id,
+                "description": task.description,
+                "status":      task.status,
+                "error":       task.error,
+                "created_at":  task.created_at,
+                "finished_at": task.finished_at,
+                "messages":    task.messages,
+            })
+        os.makedirs(os.path.dirname(_TASKS_FILE), exist_ok=True)
+        tmp = _TASKS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, _TASKS_FILE)
+    except Exception as exc:
+        print(f"[persist] WARNING: could not save tasks: {exc}")
+
+
+def _load_tasks() -> Dict[str, AgentTask]:
+    """Load tasks from disk on startup. Mark any pending/running as interrupted."""
+    loaded: Dict[str, AgentTask] = {}
+    if not os.path.exists(_TASKS_FILE):
+        return loaded
+    try:
+        with open(_TASKS_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        for item in data:
+            task             = AgentTask(item["id"], item["description"])
+            task.status      = item.get("status", "unknown")
+            task.error       = item.get("error")
+            task.created_at  = item.get("created_at", task.created_at)
+            task.finished_at = item.get("finished_at")
+            task.messages    = item.get("messages", [])
+            if task.status in ("pending", "running"):
+                task.status      = "interrupted"
+                task.finished_at = datetime.now(timezone.utc).isoformat()
+                task.messages.append({
+                    "name":      "System",
+                    "content":   "Task was interrupted by a server restart.",
+                    "timestamp": task.finished_at,
+                })
+            loaded[task.id] = task
+        print(f"[persist] Loaded {len(loaded)} task(s) from disk.")
+    except Exception as exc:
+        print(f"[persist] WARNING: could not load tasks: {exc}")
+    return loaded
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Agent runner
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -93,6 +154,14 @@ async def _run_agent_task(task: AgentTask) -> None:
         team.create_agents()
         await team.run_development_team(task.description, message_queue=task.queue)
         task.status = "completed"
+    except asyncio.CancelledError:
+        task.status = "cancelled"
+        await task.queue.put({
+            "type":      "system",
+            "name":      "System",
+            "content":   "Task was stopped by user.",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
     except Exception as exc:
         task.status = "error"
         task.error  = str(exc)
@@ -105,13 +174,16 @@ async def _run_agent_task(task: AgentTask) -> None:
     finally:
         task.finished_at = datetime.now(timezone.utc).isoformat()
         await task.queue.put(None)   # sentinel → SSE generator closes
+        _persist_tasks()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # FastAPI application
 # ──────────────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="AI Agent Platform", version="1.0.0")
+_tasks = _load_tasks()  # restore from disk; any pending/running → interrupted
+
+app = FastAPI(title="AgentForge", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -171,7 +243,8 @@ async def create_task(req: TaskRequest):
     task_id = str(uuid.uuid4())[:8]
     task    = AgentTask(task_id, req.task.strip())
     _tasks[task_id] = task
-    asyncio.create_task(_run_agent_task(task))
+    _persist_tasks()
+    task._asyncio_task = asyncio.create_task(_run_agent_task(task))
     return task.to_dict()
 
 
@@ -237,6 +310,31 @@ async def stream_task(task_id: str):
             "Connection":       "keep-alive",
         },
     )
+
+
+@app.post("/api/tasks/{task_id}/stop", status_code=200)
+async def stop_task(task_id: str):
+    if task_id not in _tasks:
+        raise HTTPException(404, "task not found")
+    task = _tasks[task_id]
+    if task.status not in ("pending", "running"):
+        raise HTTPException(400, f"task is already {task.status}")
+    if task._asyncio_task and not task._asyncio_task.done():
+        task._asyncio_task.cancel()
+    _persist_tasks()
+    return {"id": task_id, "status": "cancelling"}
+
+
+@app.post("/api/tasks/stop-all", status_code=200)
+async def stop_all_tasks():
+    cancelled = []
+    for task in list(_tasks.values()):
+        if task.status in ("pending", "running"):
+            if task._asyncio_task and not task._asyncio_task.done():
+                task._asyncio_task.cancel()
+            cancelled.append(task.id)
+    _persist_tasks()
+    return {"cancelled": cancelled, "count": len(cancelled)}
 
 
 @app.delete("/api/tasks/{task_id}", status_code=204)
