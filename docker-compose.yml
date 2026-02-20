@@ -30,7 +30,6 @@ services:
       - mcp-filesystem
       - mcp-web
       - mcp-exec
-      - mcp-brave
       - mcp-memory
       - mcp-git
       - mcp-time
@@ -97,24 +96,6 @@ services:
              done"
     restart: unless-stopped
 
-  mcp-brave:
-    image: node:20-slim
-    container_name: mcp-brave
-    ports:
-      - "3004:3004"
-    volumes:
-      - ./mcp-servers:/mcp-servers
-    working_dir: /mcp-servers
-    environment:
-      - BRAVE_API_KEY=${BRAVE_API_KEY:-}
-    command: >
-      sh -c "npm install -g @modelcontextprotocol/server-brave-search &&
-             npm install -g supergateway &&
-             while true; do
-               npx supergateway --stdio 'npx @modelcontextprotocol/server-brave-search' --port 3004;
-             done"
-    restart: unless-stopped
-
   mcp-memory:
     image: node:20-slim
     container_name: mcp-memory
@@ -177,7 +158,6 @@ services:
       - mcp-filesystem
       - mcp-web
       - mcp-exec
-      - mcp-brave
       - mcp-memory
       - mcp-git
       - mcp-time

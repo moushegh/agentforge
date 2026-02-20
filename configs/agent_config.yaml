@@ -24,10 +24,6 @@ mcp_servers:
     url: "http://mcp-exec:3003/sse"
     agents: [developer, tester]
     description: "Execute shell commands in /workspace"
-  brave:
-    url: "http://mcp-brave:3004/sse"
-    agents: [web_researcher]
-    description: "Brave web search for current, real-time information"
   memory:
     url: "http://mcp-memory:3005/sse"
     agents: [team_lead, web_researcher, developer, tester, reviewer]
@@ -92,12 +88,11 @@ agents:
     system_message: |
       You are a web researcher. Provide CONCISE research findings (max 10 bullet points).
       You have MCP tools available:
-        - brave_web_search(query): search the web for current information. PREFER this over fetch.
         - fetch(url): retrieve content from a specific known URL.
         - get_current_time / get_current_date: get today's date for time-sensitive queries.
         - create_entities, search_nodes, add_observations (memory): store key findings so
           Developer and Tester can retrieve them; recall prior research on the same topic.
-      WORKFLOW: brave_web_search → fetch specific URLs if needed → add_observations to memory.
+      WORKFLOW: fetch relevant URLs → add_observations to memory.
       Keep responses under 200 words. Format as bullet points starting with KEY FINDINGS.
     llm_config: ${models.local_llm}
     code_execution_config: False

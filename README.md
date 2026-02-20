@@ -44,7 +44,7 @@ A fully local, GPU-accelerated multi-agent development platform. A team of five 
 | LLM runtime | [Ollama](https://ollama.com) |
 | Default model | `devstral-small-2` (Mistral, code-optimised) |
 | Tool protocol | Model Context Protocol (MCP) over SSE |
-| MCP servers | filesystem, web fetch, shell exec, git, memory, time, brave search |
+| MCP servers | filesystem, web fetch, shell exec, git, memory, time |
 | Web backend | FastAPI + uvicorn + Server-Sent Events |
 | Containers | Docker Compose |
 | GPU | NVIDIA (WSL2 + nvidia-container-toolkit) |
@@ -103,17 +103,11 @@ docker compose up -d
 # 4. Wait for the web server to be ready (~30 s for pip installs on first boot)
 docker logs -f ai-web   # ready when you see: Uvicorn running on http://0.0.0.0:8080
 
-# 5. (Optional) Enable Brave Search for the WebResearcher agent
-#    Get a free API key at https://brave.com/search/api/ (2000 queries/month free)
-cp .env.example .env
-# edit .env and set BRAVE_API_KEY=your_key_here
-docker compose up -d mcp-brave   # restart brave with the key
-
 # 5. Open the UI
 xdg-open http://localhost:8080   # or just open it in your browser
 ```
 
-That's it. No `.env` file, no API keys, no extra config needed.
+That's it. No API keys, no extra config needed.
 
 ---
 
@@ -121,7 +115,6 @@ That's it. No `.env` file, no API keys, no extra config needed.
 
 ```
 agentforge/
-├── .env.example                # copy to .env and set BRAVE_API_KEY
 ├── docker-compose.yml          # all services
 ├── configs/
 │   └── agent_config.yaml       # model + agent + MCP config (edit here to swap models)
@@ -209,14 +202,9 @@ No restart required — the config is read fresh for every new task.
 | `mcp-filesystem` | 3001 | read/write/list files in `/workspace` | Developer, Tester |
 | `mcp-web` | 3002 | `fetch` — retrieve any URL | WebResearcher |
 | `mcp-exec` | 3003 | `execute_command` — run shell commands | Developer, Tester |
-| `mcp-brave` | 3004 | `brave_web_search` — real-time web search | WebResearcher |
 | `mcp-memory` | 3005 | knowledge graph (entities, relations, observations) | All agents |
 | `mcp-git` | 3006 | full git operations on `/workspace` | Developer, Tester, Reviewer |
 | `mcp-time` | 3007 | `get_current_time`, `convert_time` | WebResearcher |
-
-> **Brave Search** requires a free API key. Copy `.env.example` → `.env` and set `BRAVE_API_KEY`.
-> Get one at https://brave.com/search/api/ (2000 queries/month on the free tier).
-> Without a key, `mcp-brave` keeps restarting but all other servers remain functional.
 
 ---
 
@@ -225,7 +213,7 @@ No restart required — the config is read fresh for every new task.
 | Agent | Role | MCP tools |
 |---|---|---|
 | **TeamLead** | Orchestrates the workflow, delegates with `@AgentName:` | `search_nodes`, `add_observations` (memory) |
-| **WebResearcher** | Fetches URLs, searches the web, summarises findings | `brave_web_search`, `fetch`, `get_current_time`, memory |
+| **WebResearcher** | Fetches URLs, summarises findings | `fetch`, `get_current_time`, memory |
 | **Developer** | Writes, saves, and commits code | `read_file`, `write_file`, `execute_command`, `git_commit`, `git_diff`, memory |
 | **Tester** | Writes and runs tests, reports results | filesystem, `execute_command`, `git_diff`, `git_log`, memory |
 | **Reviewer** | Code review — bugs, style, correctness | `read_file`, `git_diff`, `git_log`, memory |
