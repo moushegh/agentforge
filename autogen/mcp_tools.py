@@ -8,6 +8,7 @@ preventing any conflict with nest_asyncio or the main asyncio event loop.
 """
 
 import asyncio
+import concurrent.futures
 import inspect
 import json
 import re
@@ -145,42 +146,127 @@ def execute_text_tool_call(name: str, arguments: dict) -> "str | None":
     raise last_exc
 
 
+
 # ---------------------------------------------------------------------------
-# Internal helper: run a coroutine in a dedicated background thread
+# Persistent background event loop — shared across ALL MCP calls
 # ---------------------------------------------------------------------------
+# Creating a new asyncio loop per call causes httpx to retain stale socket
+# state between loops, producing "Server disconnected" errors on the second
+# call to any SSE-based MCP server. A single long-lived loop avoids this.
+
+_BG_LOOP: asyncio.AbstractEventLoop | None = None
+_BG_LOCK = threading.Lock()
+
+
+def _get_bg_loop() -> asyncio.AbstractEventLoop:
+    global _BG_LOOP
+    with _BG_LOCK:
+        if _BG_LOOP is None or _BG_LOOP.is_closed():
+            _BG_LOOP = asyncio.new_event_loop()
+
+            def _run(lp: asyncio.AbstractEventLoop) -> None:
+                asyncio.set_event_loop(lp)
+                lp.run_forever()
+
+            t = threading.Thread(target=_run, args=(_BG_LOOP,), daemon=True)
+            t.start()
+        return _BG_LOOP
+
 
 def _run_in_thread(coro):
     """
-    Execute *coro* in a brand-new event loop running in a background thread.
-    Safe to call from sync or async contexts, with or without nest_asyncio.
+    Submit *coro* to the shared persistent background event loop and block
+    until it completes.  Safe to call from sync or async contexts.
     """
-    result_box: list = [None]
-    error_box:  list = [None]
-
-    def _worker():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result_box[0] = loop.run_until_complete(coro)
-        except BaseException as exc:
-            # Python 3.11 asyncio.TaskGroup raises ExceptionGroup; unwrap to
-            # surface the real underlying error instead of the opaque wrapper.
-            if hasattr(exc, "exceptions") and exc.exceptions:
-                error_box[0] = exc.exceptions[0]
-            else:
-                error_box[0] = exc
-        finally:
-            loop.close()
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join(timeout=60)   # 60 s — long enough for large web pages
-
-    if t.is_alive():
+    loop = _get_bg_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    try:
+        result = future.result(timeout=60)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
         raise TimeoutError("MCP call timed out after 60 s")
-    if error_box[0] is not None:
-        raise error_box[0]
-    return result_box[0]
+    except BaseException as exc:
+        # Python 3.11 asyncio.TaskGroup raises ExceptionGroup; unwrap to
+        # surface the real underlying error instead of the opaque wrapper.
+        if hasattr(exc, "exceptions") and exc.exceptions:
+            raise exc.exceptions[0]
+        raise
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Session manager — ONE persistent ClientSession per server URL
+# ---------------------------------------------------------------------------
+# supergateway only supports one active SSE connection per child process.
+# Opening a second connection before the first has closed crashes the gateway
+# with "Already connected to a transport."  We solve this by keeping a single
+# long-lived ClientSession per URL and serialising all calls through it.
+
+class _SessionEntry:
+    def __init__(self):
+        self.session = None      # mcp.ClientSession
+        self.ctx_stack = None    # contextlib.AsyncExitStack
+        self.lock = None         # asyncio.Lock (created in bg loop)
+
+
+_SESSIONS: dict[str, _SessionEntry] = {}
+_SESSIONS_LOCK = threading.Lock()
+
+
+async def _get_session(server_url: str):
+    """Return (or create) the persistent ClientSession for *server_url*."""
+    from mcp.client.sse import sse_client
+    from mcp import ClientSession
+    import contextlib
+
+    with _SESSIONS_LOCK:
+        if server_url not in _SESSIONS:
+            _SESSIONS[server_url] = _SessionEntry()
+        entry = _SESSIONS[server_url]
+
+    # Create the asyncio.Lock inside the bg loop the first time
+    if entry.lock is None:
+        entry.lock = asyncio.Lock()
+
+    async with entry.lock:
+        # If session is alive, return it
+        if entry.session is not None:
+            return entry.session, entry.lock
+
+        # Open a fresh SSE connection
+        stack = contextlib.AsyncExitStack()
+        try:
+            read, write = await stack.enter_async_context(sse_client(server_url))
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            entry.session = session
+            entry.ctx_stack = stack
+        except Exception:
+            await stack.aclose()
+            entry.session = None
+            entry.ctx_stack = None
+            raise
+
+        return entry.session, entry.lock
+
+
+async def _invalidate_session(server_url: str):
+    """Close and drop the cached session so the next call reconnects."""
+    with _SESSIONS_LOCK:
+        entry = _SESSIONS.get(server_url)
+    if entry is None:
+        return
+    if entry.lock is None:
+        entry.session = None
+        return
+    async with entry.lock:
+        if entry.ctx_stack is not None:
+            try:
+                await entry.ctx_stack.aclose()
+            except Exception:
+                pass
+        entry.session = None
+        entry.ctx_stack = None
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +275,7 @@ def _run_in_thread(coro):
 
 async def _list_tools(server_url: str) -> list:
     """Return the list of Tool objects advertised by an MCP server."""
+    # Use a one-shot connection for tool discovery (happens once at startup)
     from mcp.client.sse import sse_client
     from mcp import ClientSession
 
@@ -200,14 +287,12 @@ async def _list_tools(server_url: str) -> list:
 
 
 async def _call_tool(server_url: str, tool_name: str, arguments: dict) -> str:
-    """Call *tool_name* on *server_url* and return the result as a string."""
-    from mcp.client.sse import sse_client
-    from mcp import ClientSession
-
-    async with sse_client(server_url) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(tool_name, arguments)
+    """Call *tool_name* on *server_url* via the shared persistent session."""
+    for attempt in range(3):
+        try:
+            session, lock = await _get_session(server_url)
+            async with lock:
+                result = await session.call_tool(tool_name, arguments)
             if result.content:
                 parts = []
                 for item in result.content:
@@ -217,6 +302,14 @@ async def _call_tool(server_url: str, tool_name: str, arguments: dict) -> str:
                         parts.append(str(item.data))
                 return "\n".join(parts) if parts else "Success (no output)"
             return "Success (no output)"
+        except Exception as exc:
+            # Session may have died; invalidate so next attempt reconnects
+            await _invalidate_session(server_url)
+            if attempt == 2:
+                raise
+            import asyncio as _aio
+            await _aio.sleep(1 * (attempt + 1))
+
 
 
 # ---------------------------------------------------------------------------

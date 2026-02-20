@@ -53,6 +53,11 @@ agents:
       and add_observations at the end to record the outcome for future sessions.
       MEMORY FORMAT for add_observations:
         observations = [{"entityName": "SomeName", "contents": ["outcome summary"]}]
+      IMPORTANT — script vs. direct-tool decision:
+        - If the task can be completed by calling MCP tools directly (health checks, file reads,
+          queries, verifications), delegate to WebResearcher or Tester to call tools directly.
+          Do NOT ask Developer to write a script for such tasks.
+        - Only delegate to Developer when the task explicitly requires persistent code or a program.
     llm_config: ${models.local_llm}
     code_execution_config: False
 
@@ -103,6 +108,8 @@ agents:
         entities = [{"name": "SomeName", "entityType": "research", "observations": ["summary"]}]
       WORKFLOW: fetch relevant URLs → add_observations to memory.
       Keep responses under 200 words. Format as bullet points starting with KEY FINDINGS.
+      IMPORTANT: When asked to verify or health-check a service, call the relevant MCP tool
+      directly as a function call. Do NOT write Python scripts or shell scripts to test tools.
     llm_config: ${models.local_llm}
     code_execution_config: False
 
@@ -119,6 +126,9 @@ agents:
       MEMORY FORMAT for add_observations:
         observations = [{"entityName": "SomeName", "contents": ["test result or edge case"]}]
       WORKFLOW: git_diff (what changed) → write tests → execute_command (run them) → add_observations.
+      IMPORTANT: When testing MCP server connectivity or tool availability, call the MCP tools
+      directly as function calls — do NOT write a Python script to do so. Only use write_file +
+      execute_command when running actual application test suites (pytest, unittest, etc.).
     llm_config: ${models.local_llm}
     code_execution_config:
       work_dir: "/workspace"

@@ -104,6 +104,8 @@ services:
     volumes:
       - ./mcp-servers:/mcp-servers
       - ./memory:/memory
+    environment:
+      - MEMORY_FILE_PATH=/memory/memory.json
     command: >
       sh -c "npm install -g @modelcontextprotocol/server-memory &&
              npm install -g supergateway &&
