@@ -229,7 +229,9 @@ RESULTS: PASS (with note about negative input handling)""",
         self.user_proxy = UserProxyAgent(
             name="UserProxy",
             human_input_mode="NEVER",
-            max_consecutive_auto_reply=10,
+            max_consecutive_auto_reply=100,  # GroupChat: sender is always GCManager so this
+                                              # effectively caps total tool-call executions.
+                                              # 10 (old default) was too low for multi-step tasks.
             is_termination_msg=lambda x: x.get("content", "").rstrip().endswith("TERMINATE"),
             code_execution_config=False
         )
@@ -282,6 +284,8 @@ RESULTS: PASS (with note about negative input handling)""",
         # Loop-break counters: consecutive empty replies and repeated delegations
         _empty_count: dict = {}      # agent_name -> consecutive empty reply count
         _delegate_count: dict = {}   # agent_name -> consecutive delegation count by TeamLead
+        _tool_call_count: dict = {}  # agent_name -> tool-call executions in current stage
+        TOOL_CALL_LIMIT = 8          # force-advance after this many tool calls per stage
 
         # Reverse lookup: agent.name ("WebResearcher") → agent object
         # self.agents uses YAML keys ("web_researcher"), not display names.
@@ -328,6 +332,16 @@ RESULTS: PASS (with note about negative input handling)""",
                         caller_name = msg.get("name", "")
                         if caller_name in agents_by_name:
                             pending_text_caller["name"] = None
+                            # Track how many tool-call round-trips this specialist has used
+                            _tool_call_count[caller_name] = _tool_call_count.get(caller_name, 0) + 1
+                            if _tool_call_count[caller_name] >= TOOL_CALL_LIMIT:
+                                print(f"[loop-break] {caller_name} used {_tool_call_count[caller_name]} "
+                                      f"tool calls — force-advancing stage.")
+                                _tool_call_count[caller_name] = 0
+                                _empty_count[caller_name] = 0
+                                _delegate_count[caller_name] = 0
+                                _stage_done_for(caller_name)
+                                return self.agents['team_lead']
                             return agents_by_name[caller_name]
                 # 2. Text tool call path
                 if pending_text_caller["name"] and pending_text_caller["name"] in agents_by_name:
@@ -356,6 +370,7 @@ RESULTS: PASS (with note about negative input handling)""",
                 if last_content:
                     _empty_count[last_speaker_name] = 0
                     _delegate_count[last_speaker_name] = 0
+                    _tool_call_count[last_speaker_name] = 0  # reset on clean text reply
                     _stage_done_for(last_speaker_name)
                 else:
                     _empty_count[last_speaker_name] = _empty_count.get(last_speaker_name, 0) + 1
@@ -364,6 +379,7 @@ RESULTS: PASS (with note about negative input handling)""",
                               f"empty replies — force-advancing stage.")
                         _empty_count[last_speaker_name] = 0
                         _delegate_count[last_speaker_name] = 0
+                        _tool_call_count[last_speaker_name] = 0
                         _stage_done_for(last_speaker_name)
                 return self.agents['team_lead']
 
@@ -374,6 +390,7 @@ RESULTS: PASS (with note about negative input handling)""",
                 for agent_name in ("WebResearcher", "Developer", "Tester", "Reviewer"):
                     if f"@{agent_name}" in last_content:
                         _delegate_count[agent_name] = _delegate_count.get(agent_name, 0) + 1
+                        _tool_call_count[agent_name] = 0  # fresh delegation = fresh tool-call budget
                         if _delegate_count[agent_name] > DELEGATE_LIMIT:
                             print(f"[loop-break] TeamLead delegated to {agent_name} "
                                   f"{_delegate_count[agent_name]}x — force-advancing stage.")
